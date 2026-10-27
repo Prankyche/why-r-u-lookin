@@ -28,7 +28,10 @@ class State(Enum):
     DESCEND_DROP = auto()
     RELEASE = auto()
     ASCEND_RETURN = auto()
+    ALIGN_EXIT_BANNER = auto()
+    TURN_RETURN = auto()
     RETURN_CORRIDOR = auto()
+    RETURN_HOME = auto()
     LAND = auto()
     RTL = auto()
     DONE = auto()
@@ -42,15 +45,18 @@ class Event(Enum):
     QR_MISMATCH = auto()       # delivery QR seen but does not match
     BANNER_FOUND = auto()
     CORRIDOR_EXIT = auto()
-    IN_ZONE = auto()           # GPS inside drop-zone boundary
-    DROP_CONFIRMED = auto()    # N20 encoder confirms release
+    IN_ZONE = auto()           # local position inside the field rectangle
+    DROP_CONFIRMED = auto()    # payload motor run finished
     LANDED = auto()
+    YAW_REACHED = auto()       # return turn complete (180 deg)
     TIMEOUT = auto()           # corridor or state timeout
     LINK_LOST = auto()
     LOW_BATT = auto()
     GEOFENCE_BREACH = auto()
     PILOT_TAKEOVER = auto()    # FC left GUIDED (RC switch)
     UNSAFE = auto()            # wall clearance or front sensor failure
+    SWEEP_DONE = auto()        # field sweep finished (all passes) with no QR match
+    HOME_REACHED = auto()      # back over the take-off point, ready to land
 
 
 # Target altitude in metres for states that hold altitude.
@@ -63,6 +69,9 @@ ALTITUDE_M: dict[State, float] = {
     State.DESCEND_DROP: 5.0,
     State.ASCEND_RETURN: 10.0,
     State.RETURN_CORRIDOR: 3.0,
+    State.ALIGN_EXIT_BANNER: 10.0,
+    State.TURN_RETURN: 10.0,
+    State.RETURN_HOME: 5.0,
 }
 
 # Per-state timeouts in seconds. Tune on real flights.
@@ -72,12 +81,15 @@ TIMEOUTS_S: dict[State, float] = {
     State.ALIGN_BANNER: 30,
     State.CORRIDOR_NAV: 90,
     State.ASCEND_TARGET: 20,
-    State.SEARCH_QR: 120,
+    State.SEARCH_QR: 330,
     State.DESCEND_DROP: 20,
     State.RELEASE: 10,
     State.ASCEND_RETURN: 20,
+    State.ALIGN_EXIT_BANNER: 60,
+    State.TURN_RETURN: 20,
     State.RETURN_CORRIDOR: 90,
-    State.LAND: 30,
+    State.RETURN_HOME: 40,
+    State.LAND: 60,
 }
 
 # Normal flow: (state, event) -> next state.
@@ -89,10 +101,14 @@ TRANSITIONS: dict[tuple[State, Event], State] = {
     (State.CORRIDOR_NAV, Event.CORRIDOR_EXIT): State.ASCEND_TARGET,
     (State.ASCEND_TARGET, Event.ALT_REACHED): State.SEARCH_QR,
     (State.SEARCH_QR, Event.QR_MISMATCH): State.SEARCH_QR,
+    (State.SEARCH_QR, Event.SWEEP_DONE): State.RTL,
     (State.DESCEND_DROP, Event.ALT_REACHED): State.RELEASE,
     (State.RELEASE, Event.DROP_CONFIRMED): State.ASCEND_RETURN,
-    (State.ASCEND_RETURN, Event.ALT_REACHED): State.RETURN_CORRIDOR,
-    (State.RETURN_CORRIDOR, Event.CORRIDOR_EXIT): State.LAND,
+    (State.ASCEND_RETURN, Event.ALT_REACHED): State.ALIGN_EXIT_BANNER,
+    (State.ALIGN_EXIT_BANNER, Event.BANNER_FOUND): State.TURN_RETURN,
+    (State.TURN_RETURN, Event.YAW_REACHED): State.RETURN_CORRIDOR,
+    (State.RETURN_CORRIDOR, Event.CORRIDOR_EXIT): State.RETURN_HOME,
+    (State.RETURN_HOME, Event.HOME_REACHED): State.LAND,
     (State.LAND, Event.LANDED): State.DONE,
 }
 
@@ -115,6 +131,8 @@ class MissionFSM:
     entered_at: float = field(default_factory=time.monotonic)
     zone_ok: bool = False
     qr_matched: bool = False
+    alt_ok: bool = False
+    _gate_logged: object = None
     history: list[tuple[float, State, State]] = field(default_factory=list)
     on_enter: Optional[Callable[[State], None]] = None
 
@@ -141,13 +159,18 @@ class MissionFSM:
             self._goto(State.DESCEND_DROP, reason="QR_MATCH")
             return self.state
 
-        # 4. Drop gate: release only if QR matched AND inside the zone.
-        if self.state is State.DESCEND_DROP and event is Event.ALT_REACHED:
-            if self.qr_matched and self.zone_ok:
+        # 4. Drop gate: release only when altitude reached AND QR matched AND inside the zone.
+        #    Any of the three can arrive last, so re-check on each.
+        if self.state is State.DESCEND_DROP and event in (Event.ALT_REACHED, Event.IN_ZONE, Event.QR_MATCH):
+            if event is Event.ALT_REACHED:
+                self.alt_ok = True
+            if self.alt_ok and self.qr_matched and self.zone_ok:
                 self._goto(State.RELEASE, reason="gate passed")
             else:
-                log.info("Drop gate held: qr_matched=%s zone_ok=%s",
-                         self.qr_matched, self.zone_ok)
+                key = (self.alt_ok, self.qr_matched, self.zone_ok)
+                if key != self._gate_logged:                    # log when the reason changes, not on every tick
+                    log.info("Drop gate held: alt_ok=%s qr_matched=%s zone_ok=%s", *key)
+                    self._gate_logged = key
             return self.state
 
         # 5. Standard table lookup.
@@ -184,7 +207,12 @@ class MissionFSM:
             self.qr_matched = False
             self.zone_ok = False
 
+        if new is State.DESCEND_DROP:
+            self.alt_ok = False
+            self._gate_logged = None
+
         self.state = new
-        self.entered_at = time.monotonic()
+        if new is not old:
+            self.entered_at = time.monotonic()      # a self-transition (QR_MISMATCH) must not restart the timeout
         if self.on_enter is not None:
             self.on_enter(new)

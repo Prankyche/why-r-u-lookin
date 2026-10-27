@@ -15,8 +15,12 @@ lasts longer than config.FRONT_LIDAR_SILENT_ABORT_S.
 """
 import time
 import config
-from tof_interface import (RangeSensor, SensorConfig,
-                           make_vl53l1x_pair, make_adafruit_vl53l1x_pair)
+try:
+    from drivers.tof_interface import (RangeSensor, SensorConfig,
+                                       make_vl53l1x_pair, make_adafruit_vl53l1x_pair)
+except ImportError:                      # run from inside drivers/
+    from tof_interface import (RangeSensor, SensorConfig,
+                               make_vl53l1x_pair, make_adafruit_vl53l1x_pair)
 
 DISTANCE_SENSOR_MSG_ID = 132
 

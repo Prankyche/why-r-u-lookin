@@ -29,8 +29,11 @@ def test_happy_path_reaches_done():
         Event.IN_ZONE,            # latch zone
         Event.ALT_REACHED,        # descend -> release
         Event.DROP_CONFIRMED,     # release -> ascend return
-        Event.ALT_REACHED,        # ascend return -> return corridor
-        Event.CORRIDOR_EXIT,      # return corridor -> land
+        Event.ALT_REACHED,        # ascend return -> align exit banner
+        Event.BANNER_FOUND,       # exit banner centred -> turn
+        Event.YAW_REACHED,        # 180 deg turn done -> return corridor
+        Event.CORRIDOR_EXIT,      # return corridor -> return home
+        Event.HOME_REACHED,       # over the take-off point -> land
         Event.LANDED,             # land -> done
     ])
     assert fsm.state is State.DONE

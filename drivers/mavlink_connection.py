@@ -83,14 +83,16 @@ class Vehicle:
         time.sleep(0.5)
 
     # ============= Arming / Mode =============
-    def set_mode(self, mode_name):
+    def set_mode(self, mode_name, wait=True):
+        """Switch flight mode. wait=False sends the command and returns at once (use it for RTL/LAND failsafes: with a dead
+        link the confirmation never arrives and waiting would freeze the caller for 10 s)."""
         mode_id = self.master.mode_mapping()[mode_name]
         self.master.mav.set_mode_send(
             self.master.target_system,
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
             mode_id,
         )
-        return self._wait_for_mode(mode_name)
+        return self._wait_for_mode(mode_name) if wait else True
 
     def _wait_for_mode(self, mode_name, timeout_s=10):
         t0 = time.time()
@@ -224,6 +226,31 @@ class Vehicle:
             return None
         return (msg.x, msg.y, msg.z)
 
+    def get_global_latlon(self):
+        """(lat, lon) in degrees from the newest GLOBAL_POSITION_INT, or None."""
+        msg = self._get_cached_message("GLOBAL_POSITION_INT")
+        if msg is None or not (msg.lat or msg.lon):
+            return None
+        return (msg.lat / 1e7, msg.lon / 1e7)
+
+    def get_battery(self, max_age_s=3.0):
+        """(remaining_percent or None, volts or None) from the newest SYS_STATUS, or (None, None) if stale/absent.
+        remaining is None when the FC has no capacity configured (it reports -1)."""
+        msg = self._get_cached_message("SYS_STATUS")
+        t = self._cache_timestamps.get("SYS_STATUS")
+        if msg is None or t is None or time.time() - t > max_age_s:
+            return (None, None)
+        pct = None if msg.battery_remaining is None or msg.battery_remaining < 0 else float(msg.battery_remaining)
+        volts = None if msg.voltage_battery in (None, 0, 65535) else msg.voltage_battery / 1000.0
+        return (pct, volts)
+
+    def get_latlon(self):
+        """(lat, lon) in degrees from the FC's fused position estimate, or None."""
+        msg = self._get_cached_message("GLOBAL_POSITION_INT")
+        if msg is None or not (msg.lat or msg.lon):
+            return None
+        return (msg.lat / 1e7, msg.lon / 1e7)
+
     def get_yaw(self):
         """Returns current yaw in radians (NED, 0 = North), or None."""
         msg = self._get_cached_message("ATTITUDE")
@@ -290,6 +317,20 @@ class Vehicle:
 
     def hold_position(self):
         self.send_velocity_body(0, 0, 0, 0)
+
+    def set_speed(self, speed_mps):
+        """Guided ground speed for position targets (MAV_CMD_DO_CHANGE_SPEED, type 1 = ground)."""
+        self.master.mav.command_long_send(
+            self.master.target_system, self.master.target_component,
+            mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
+            0, 1, float(speed_mps), -1, 0, 0, 0, 0,
+        )
+        name = getattr(config, "SPEED_PARAM_NAME", None)
+        if name:        # GUID_OPTIONS bit 6: the FC ignores DO_CHANGE_SPEED and uses WP_SPD / WPNAV_SPEED
+            self.master.mav.param_set_send(
+                self.master.target_system, self.master.target_component, name.encode(),
+                float(speed_mps) * getattr(config, "SPEED_PARAM_SCALE", 1.0),
+                mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
 
     # ============= Fake distance sensor injection (SITL only) =============
     def send_fake_distance_sensor(self, distance_cm, orientation, sensor_id):
@@ -422,7 +463,7 @@ class FakeVehicle:
     def get_distance_sensor_mm(self, orientation=0, max_age_s=0.5):
         return None
 
-    def set_mode(self, mode_name):
+    def set_mode(self, mode_name, wait=True):
         self.mode = mode_name
         return True
 
@@ -449,3 +490,19 @@ class FakeVehicle:
     def send_position_target_local(self, x, y, z, yaw=None):
         """Offline stub: ArduPilot path planning is not emulated."""
         pass
+
+    def set_speed(self, speed_mps):
+        """Offline stub."""
+        self.speed = speed_mps
+
+    def get_global_latlon(self):
+        """Offline stub: no GPS."""
+        return None
+
+    def get_latlon(self):
+        """Offline stub: no GPS."""
+        return None
+
+    def get_battery(self, max_age_s=3.0):
+        """Offline stub: no battery data."""
+        return (None, None)

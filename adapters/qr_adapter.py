@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 
 import config
 from fsm.mission_fsm import Event, State
-from vision.qr import aerothon_qr as aq
+from vision.qr import qr_combined as aq
 
 log = logging.getLogger("qr_adapter")
 
