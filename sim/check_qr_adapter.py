@@ -10,7 +10,13 @@ import sys
 from config import DELIVERY_ZONE_ALTITUDE_M as DELIVERY_ALT
 from fsm.mission_fsm import State
 from adapters.qr_adapter import QRAdapter
-from vision.qr.qr_whiteborder import video_frames
+from vision.qr import aerothon_qr as aq
+
+
+def video_frames(path):
+    """aerothon_qr yields (idx, frame, t); this script only needs (idx, frame)."""
+    for idx, frame, _t in aq.video_frames(path):
+        yield idx, frame
 
 
 # def main():

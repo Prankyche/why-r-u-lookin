@@ -84,12 +84,7 @@ SIM_OBSTACLES = []   # [] = no simulated front obstacles (with SENSOR_SOURCE = "
 SIM_WALL_NOISE_STD_M = 0.03   # Use real sensor noise levels instead:
 # SIM_WALL_NOISE_STD_M = (FRONT_SENSOR_NOISE_STD_MM / 1000.0)  # ~0.002 m
 
-# ---- Sensor source ----
-#   "sim"    : everything simulated (sensor_sim.py)
-#   "logged" : left/right from the L_/R_ calibration .docx logs, front simulated
-#   "replay" : simulated corridor + the real noise from those calibration logs
-#   "obslog" : left/right from SIDE_OBSTACLE_LOG_PATH, front from FRONT_LIDAR_LOG_PATH if that file exists   <- Mission Planner test
-#   "real"   : VL53L1X on the Pi + lidar on the FC                                                         <- the drone
+# ---- Sensor source ----                                                        <- the drone
 SENSOR_SOURCE = "real"                              # <-- SITL: "obslog"
 SIDE_OBSTACLE_LOG_PATH = "side_obstacle_log.txt"   # 'Left Obstacle: .. cm | Right Obstacle: .. cm' lines
 SIDE_OBSTACLE_LOG_LOOP = True                      # loop the logs when they end (for continuous testing)
@@ -110,10 +105,6 @@ TOF_TIMING_BUDGET_MS = 50           # adafruit driver only
 TOF_NONE_MEANS_CLEAR = False        # False = a side sensor with no reading is a FAULT (reads 0.0 -> abort/hold)
 TOF_CLEAR_RANGE_M = 4.0             # only used if TOF_NONE_MEANS_CLEAR is True
 FRONT_LIDAR_ORIENTATION = 0         # MAV_SENSOR_ROTATION_NONE = forward (matches RNGFND1_ORIENT)
-
-# ---- Stream the Pi's left/right ToF to the FC as DISTANCE_SENSOR (shows in Mission Planner) ----
-# Same packets your standalone script sent. On the FC they arrive as MAVLink rangefinders
-# (RNGFND2 = left, RNGFND3 = right -- see corridor_params_real.txt) and join the proximity picture.
 STREAM_SIDE_TOF_TO_FC = True
 STREAM_SIDE_TOF_HZ = 12
 TOF_LEFT_ORIENTATION = 6            # MAV_SENSOR_ROTATION_YAW_270 (left)
@@ -128,19 +119,29 @@ PREFLIGHT_SENSOR_CHECK = (SENSOR_SOURCE == "real")   # all three sensors must re
 CONFIRM_BEFORE_ARM = (SENSOR_SOURCE == "real")       # wait for ENTER before arming (props-on safety)
 
 if SENSOR_SOURCE == "real":
-    # On the real drone the FC reads the lidar itself; injecting fake DISTANCE_SENSOR would conflict with it.
-    # (Every other source -- sim, replay, obslog -- needs the injection so BendyRuler gets obstacle data.)
     FEED_DISTANCE_SENSOR_TO_FC = False
 
 # ---- Position-target navigation (lets ArduPilot's BendyRuler steer around obstacles) ----
 USE_POSITION_TARGET_NAV = True    # True = send corridor-end destination instead of velocities
 POSITION_TARGET_PERIOD_S = 0.5      # how often the destination is re-sent
-POSITION_TARGET_EXIT_MARGIN_M = 1.0 # aim this far past the corridor end so the drone doesn't stop early
-# In this mode the script ALSO enforces a hard stop: obstacle <= OBSTACLE_STOP_DISTANCE_M -> hold until clear.
-# FC params: see corridor_drone.param
-#   OA_TYPE=1, OA_BR_TYPE=1, OA_BR_LOOKAHEAD=4, OA_MARGIN_MAX=0.6, OA_DB_SIZE=100, OA_DB_EXPIRE=3,
-#   GUID_OPTIONS=64, WP_SPD=0.5 (m/s; older firmware: WPNAV_SPEED=50 cm/s), AVOID_ENABLE=0,
-#   PRX1_TYPE=2 for Mission Planner SITL / 4 (RangeFinder) for the real lidar on the FC
+POSITION_TARGET_EXIT_MARGIN_M = 1.0
 
 # ---- Altitude control (for descent phase before corridor entry) ----
 DESCENT_RATE_MPS = 0.5              # how fast to descend from scan altitude
+QR_CALIB_PATH = "calib.npz"          # if this file exists, its focal length and centre are used
+QR_CAMERA_WIDTH = 1280
+QR_CAMERA_HEIGHT = 800
+QR_CAMERA_FPS = 30
+QR_EXPOSURE_ABS = None               # manual exposure in V4L2 units (100 us); None = auto
+QR_HFOV_DEG = 70.0                   # datasheet value; ignored when calib.npz is present
+QR_LATENCY_S = 0.05                  # exposure + USB + decode delay, measure it
+QR_SIZE_M = 1.0                      # black QR modules only
+QR_BORDER_M = 0.0762                 # 3 inch white border on each side
+QR_FULLFRAME_EVERY = 4               # whole-frame decode every N frames (safety net)
+QR_START_WINDOW = 5                  # start code: N frames ...
+QR_START_NEEDED = 3                  # ... of which this many must agree
+QR_CONFIRM_FRAMES = 3                # target: seen this many times ...
+QR_CONFIRM_WINDOW_S = 1.0            # ... within this many seconds
+QR_MATCH_THRESHOLD = 0.80            # undecoded box vs start code
+QR_CONFLICT_THRESHOLD = 0.85         # decoded, different text, but pattern matches
+QR_MATCH_MARGIN = 0.15               # best candidate must beat the runner-up by this
